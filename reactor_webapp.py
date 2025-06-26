@@ -183,7 +183,7 @@ def main():
             batch_id += 1
             st.markdown(f"## 🧾 Unit Operation {batch_id}")
 
-            process_type = st.selectbox("1. What type of process is this unit operation?", ["reaction", "distillation", "pressurized", "extraction", "workup"], key=f"ptype_{batch_id}")
+            process_type = st.selectbox("1. What type of process is this unit operation?", ["reaction", "distillation", "pressurized", "extraction/workup"], key=f"ptype_{batch_id}")
             ph_condition = st.selectbox("2. pH condition", ["basic", "acidic", "neutral", "coupon"], key=f"ph_{batch_id}")
             corrosion_rate = 0
             coupon_materials = []
@@ -241,3 +241,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
