@@ -5,7 +5,6 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment
 
-
 def load_reactor_data(filepath):
     df = pd.read_excel(filepath)
     df.columns = df.columns.str.strip().str.lower()
@@ -30,7 +29,6 @@ def load_reactor_data(filepath):
     df["thermal options"] = df["utilities"].astype(str).apply(lambda x: [t.strip().upper() for t in x.split(",")])
     df["agitator"] = df["agitator"].astype(str).str.upper()
     return df[["reactor id", "min sensing", "min stirring", "max volume", "materials", "thermal options", "agitator"]]
-
 
 def collect_unit_operation(unit_op_id):
     steps = []
@@ -72,10 +70,15 @@ def collect_unit_operation(unit_op_id):
 
     return first_step_volume, total_volume, steps
 
-
 def filter_reactors(df, user_input, first_step_vol, total_vol):
     df = df[(df["min sensing"] <= first_step_vol) & (df["min stirring"] <= first_step_vol)]
-    vol_limit = 0.7 if user_input["pressurized"] == "yes" else 0.95
+
+    process_type = user_input["process_type"]
+    if process_type in ["distillation", "reaction", "pressurized"]:
+        vol_limit = 0.7
+    else:
+        vol_limit = 0.95
+
     df = df[df["max volume"] * vol_limit >= total_vol]
 
     if user_input["ph_condition"] == "basic":
@@ -122,7 +125,6 @@ def filter_reactors(df, user_input, first_step_vol, total_vol):
     df["Preference Match"] = df["agitator"].apply(lambda a: "✅" if any(p in a for p in preferred) else "⚠️")
     return df
 
-
 def export_steps_to_excel(steps_by_unitop):
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -141,7 +143,6 @@ def export_steps_to_excel(steps_by_unitop):
         df_export = pd.DataFrame(all_steps)
         df_export.to_excel(writer, index=False, sheet_name="Steps", startrow=2)
 
-    
         ws = writer.sheets["Steps"]
 
         for col in ws.columns:
@@ -163,7 +164,6 @@ def export_steps_to_excel(steps_by_unitop):
     buffer.seek(0)
     return buffer
 
-
 def main():
     st.set_page_config("Reactor Selector", layout="centered")
     st.title("🧪 Reactor Selection Web App")
@@ -183,7 +183,7 @@ def main():
             batch_id += 1
             st.markdown(f"## 🧾 Unit Operation {batch_id}")
 
-            pressurized = st.radio("1. Is the reaction pressurized?", ["yes", "no"], key=f"pres_{batch_id}")
+            process_type = st.selectbox("1. What type of process is this unit operation?", ["reaction", "distillation", "pressurized", "extraction", "workup"], key=f"ptype_{batch_id}")
             ph_condition = st.selectbox("2. pH condition", ["basic", "acidic", "neutral", "coupon"], key=f"ph_{batch_id}")
             corrosion_rate = 0
             coupon_materials = []
@@ -203,7 +203,7 @@ def main():
 
             if st.button(f"🔍 Submit Unit Operation {batch_id}", key=f"submit_{batch_id}"):
                 user_input = {
-                    "pressurized": pressurized,
+                    "process_type": process_type,
                     "ph_condition": ph_condition,
                     "corrosion_rate": corrosion_rate,
                     "coupon_materials": coupon_materials,
