@@ -8,7 +8,6 @@ from openpyxl.styles import Alignment
 def load_reactor_data(filepath):
     df = pd.read_excel(filepath)
     df.columns = df.columns.str.strip().str.lower()
-
     rename_map = {
         "vessel id": "reactor id",
         "min sensing volume": "min sensing",
@@ -21,7 +20,7 @@ def load_reactor_data(filepath):
     df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
 
     if "utilities" not in df.columns:
-        st.error("❌ 'utilities' column not found in the uploaded Excel. Please ensure it's named correctly.")
+        st.error(" 'utilities' column not found in the uploaded Excel. Please ensure it's named correctly.")
         return pd.DataFrame()
 
     df["moc"] = df["moc"].str.upper().replace({"ALL GLASS": "GLR"})
@@ -30,12 +29,17 @@ def load_reactor_data(filepath):
     df["agitator"] = df["agitator"].astype(str).str.upper()
     return df[["reactor id", "min sensing", "min stirring", "max volume", "materials", "thermal options", "agitator"]]
 
+def load_filter_data(uploaded_file):
+    df = pd.read_excel(uploaded_file)
+    df.columns = df.columns.str.strip().str.lower()
+    return df
+
 def collect_unit_operation(unit_op_id):
     steps = []
     total_volume = 0
     first_step_volume = None
 
-    st.subheader("🧪 Add Steps to Unit Operation")
+    st.subheader("Add Steps to Unit Operation")
     step_count = 0
     add_more_steps = True
 
@@ -74,11 +78,7 @@ def filter_reactors(df, user_input, first_step_vol, total_vol):
     df = df[(df["min sensing"] <= first_step_vol) & (df["min stirring"] <= first_step_vol)]
 
     process_type = user_input["process_type"]
-    if process_type in ["distillation", "reaction", "pressurized"]:
-        vol_limit = 0.7
-    else:
-        vol_limit = 0.95
-
+    vol_limit = 0.7 if process_type in ["distillation", "reaction", "pressurized"] else 0.95
     df = df[df["max volume"] * vol_limit >= total_vol]
 
     if user_input["ph_condition"] == "basic":
@@ -92,7 +92,7 @@ def filter_reactors(df, user_input, first_step_vol, total_vol):
         if user_input["corrosion_rate"] < 0.1:
             allowed = [mat]
         else:
-            st.error("❌ Corrosion rate too high for this material.")
+            st.error("Corrosion rate too high for this material.")
             return pd.DataFrame()
     else:
         allowed = []
@@ -122,8 +122,90 @@ def filter_reactors(df, user_input, first_step_vol, total_vol):
         elif user_input["reaction_subtype"] == "gas-liquid":
             preferred = ["RUSTON", "DISC"]
 
-    df["Preference Match"] = df["agitator"].apply(lambda a: "✅" if any(p in a for p in preferred) else "⚠️")
+    df["Preference Match"] = df["agitator"].apply(lambda a: "yes" if any(p in a for p in preferred) else "warning")
     return df
+
+def filter_filters(df, user_input):
+    ph_condition = user_input["ph_condition"]
+
+    if ph_condition == "basic":
+        allowed = ["SSR", "HAR", "HALAR"]
+    elif ph_condition == "acidic":
+        allowed = ["HALAR", "HAR"]
+    elif ph_condition == "neutral":
+        allowed = ["SSR", "HAR", "HALAR"]
+    elif ph_condition == "coupon":
+        mat = user_input["coupon_materials"][0].strip().upper()
+        if user_input["corrosion_rate"] < 0.1:
+            allowed = [mat]
+        else:
+            st.error("Corrosion rate too high for this material.")
+            return pd.DataFrame()
+    else:
+        allowed = []
+
+    df = df[df["moc"].astype(str).str.upper().isin(allowed)]
+
+    # Volume Calculation
+    mass = user_input["mass"]
+    bulk_density = user_input["bulk_density"]
+    volume_m3 = mass / bulk_density if bulk_density > 0 else 0
+    volume_litres = volume_m3 * 1000
+    st.write(f"Volume required (L): {volume_litres:.2f}")
+
+    if "cake capacity" not in df.columns:
+        st.error("'cake capacity' column not found in the uploaded Excel.")
+        return pd.DataFrame()
+
+    df = df[df["cake capacity"] * 0.9 >= volume_litres]
+
+    # --- New Filter Selection Based on Process Property ---
+    filter_property = st.selectbox("Select a filter-specific property", [
+        "specific cake resistance (m/kg)",
+        "rate of cake buildup",
+        "settling rate"
+    ])
+
+    filter_types_required = []
+
+    if filter_property == "specific cake resistance (m/kg)":
+        val = st.number_input("Enter specific cake resistance (m/kg)", min_value=0.0)
+        if 1e7 <= val < 1e8:
+            filter_types_required = ["CENTRIFUGE", "NUTSCHE"]
+        elif 1e8 <= val < 1e10:
+            filter_types_required = ["CENTRIFUGE", "ANFD", "RPF", "VNF"]
+        elif val >= 1e10:
+            filter_types_required = ["CENTRIFUGE", "NUTSCHE"]
+
+    elif filter_property == "rate of cake buildup":
+        unit = st.selectbox("Select unit for rate of cake buildup", ["cm/sec", "cm/min", "cm/hr"])
+        val = st.number_input(f"Enter rate of cake buildup ({unit})", min_value=0.0)
+        if unit == "cm/sec" and 0.1 <= val <= 10:
+            filter_types_required = ["CENTRIFUGE", "NUTSCHE"]
+        elif unit == "cm/min" and 0.1 <= val <= 10:
+            filter_types_required = ["CENTRIFUGE", "ANFD", "RPF"]
+        elif unit == "cm/hr" and 0.1 <= val <= 10:
+            filter_types_required = ["ANFD"]
+
+    elif filter_property == "settling rate":
+        val = st.number_input("Enter settling rate (cm/sec)", min_value=0.0)
+        if val > 5:
+            filter_types_required = ["CENTRIFUGE", "NUTSCHE"]
+        elif 0.1 <= val <= 5:
+            filter_types_required = ["ANFD", "RPF"]
+        elif val < 0.1:
+            filter_types_required = ["ANFD"]
+
+    # Match against filter type column
+    if "filter type" not in df.columns:
+        st.error("'filter type' column not found in the uploaded Excel.")
+        return pd.DataFrame()
+
+    df["filter type"] = df["filter type"].astype(str).str.upper()
+    df = df[df["filter type"].apply(lambda x: any(f in x for f in filter_types_required))]
+
+    return df
+
 
 def export_steps_to_excel(steps_by_unitop):
     buffer = io.BytesIO()
@@ -142,7 +224,6 @@ def export_steps_to_excel(steps_by_unitop):
 
         df_export = pd.DataFrame(all_steps)
         df_export.to_excel(writer, index=False, sheet_name="Steps", startrow=2)
-
         ws = writer.sheets["Steps"]
 
         for col in ws.columns:
@@ -165,45 +246,47 @@ def export_steps_to_excel(steps_by_unitop):
     return buffer
 
 def main():
-    st.set_page_config("Reactor Selector", layout="centered")
-    st.title("🧪 Reactor Selection Web App")
-    uploaded_file = st.file_uploader("📄 Upload reactor database", type="xlsx")
+    st.set_page_config("Reactor and Filter Selector", layout="centered")
+    st.title("Process Engineering Automation")
 
-    if uploaded_file:
-        df = load_reactor_data(uploaded_file)
-        if df.empty:
-            return
+    uploaded_file = st.file_uploader("Upload reactor database", type="xlsx")
+    if not uploaded_file:
+        st.info("Upload the reactor database to start.")
+        return
 
-        all_results = []
-        step_tracking = []
+    df = load_reactor_data(uploaded_file)
+    if df.empty:
+        return
 
-        st.header("🔧 Enter Process Conditions")
-        batch_id = 0
-        while True:
-            batch_id += 1
-            st.markdown(f"## 🧾 Unit Operation {batch_id}")
+    all_results = []
+    step_tracking = []
 
-            process_type = st.selectbox("1. What type of process is this unit operation?", ["reaction", "distillation", "pressurized", "extraction/workup"], key=f"ptype_{batch_id}")
-            ph_condition = st.selectbox("2. pH condition", ["basic", "acidic", "neutral", "coupon"], key=f"ph_{batch_id}")
-            corrosion_rate = 0
-            coupon_materials = []
+    st.header("Enter Process Conditions")
+    batch_id = 0
+    while True:
+        batch_id += 1
+        st.markdown(f"## Unit Operation {batch_id}")
 
-            if ph_condition == "coupon":
-                corrosion_rate = st.number_input("Corrosion rate (mm/year)", min_value=0.0, key=f"cr_{batch_id}")
-                coupon_materials = [st.text_input("Material for coupon study", key=f"mat_{batch_id}").upper()]
+        unit_op_type = st.selectbox("Select unit operation type", ["reaction", "distillation", "pressurized", "extraction/workup", "filtration"], key=f"unit_type_{batch_id}")
+        ph_condition = st.selectbox("pH condition", ["basic", "acidic", "neutral", "coupon"], key=f"ph_{batch_id}")
+        corrosion_rate = 0
+        coupon_materials = []
+        if ph_condition == "coupon":
+            corrosion_rate = st.number_input("Corrosion rate (mm/year)", min_value=0.0, key=f"cr_{batch_id}")
+            coupon_materials = [st.text_input("Material for coupon study", key=f"mat_{batch_id}").upper()]
 
-            temperature = st.number_input("3. Process temperature (°C)", min_value=0.0, key=f"temp_{batch_id}")
-            reaction_nature = st.selectbox("4. Nature of reaction", ["none", "homogeneous", "heterogeneous"], key=f"rn_{batch_id}")
+        temperature = st.number_input("Process temperature (°C)", min_value=0.0, key=f"temp_{batch_id}")
+
+        if unit_op_type != "filtration":
+            reaction_nature = st.selectbox("Nature of reaction", ["none", "homogeneous", "heterogeneous"], key=f"rn_{batch_id}")
             reaction_subtype = None
             if reaction_nature == "heterogeneous":
                 reaction_subtype = st.selectbox("Subtype", ["biphasic", "solid-liquid", "gas-liquid"], key=f"rs_{batch_id}")
-
             st.markdown("---")
             first_vol, total_vol, step_log = collect_unit_operation(batch_id)
-
-            if st.button(f"🔍 Submit Unit Operation {batch_id}", key=f"submit_{batch_id}"):
+            if st.button(f"Submit Unit Operation {batch_id}", key=f"submit_{batch_id}"):
                 user_input = {
-                    "process_type": process_type,
+                    "process_type": unit_op_type,
                     "ph_condition": ph_condition,
                     "corrosion_rate": corrosion_rate,
                     "coupon_materials": coupon_materials,
@@ -211,34 +294,59 @@ def main():
                     "reaction_nature": reaction_nature,
                     "reaction_subtype": reaction_subtype
                 }
-
                 matched_df = filter_reactors(df.copy(), user_input, first_vol, total_vol)
-
                 if not matched_df.empty:
                     styled = matched_df[["reactor id", "min sensing", "min stirring", "max volume", "agitator", "Preference Match"]]
-                    st.success(f"✅ Reactors matching Unit Operation {batch_id}")
+                    st.success(f"Reactors matching Unit Operation {batch_id}")
                     selected_reactor = st.selectbox("Select one reactor to use:", styled["reactor id"].tolist(), key=f"sel_reactor_{batch_id}")
                     st.dataframe(styled.style.applymap(
-                        lambda v: "background-color: #d4edda" if v == "✅" else "background-color: #fff3cd",
+                        lambda v: "background-color: #d4edda" if v == "yes" else "background-color: #fff3cd",
                         subset=["Preference Match"]
                     ))
                     all_results.append(styled)
                     step_tracking.append((step_log, selected_reactor))
                 else:
-                    st.warning("⚠️ No matching reactors found for this unit operation.")
+                    st.warning("No matching reactors found for this unit operation.")
+        else:
+            uploaded_filter_file = st.file_uploader(f"Upload Filter Database (for Unit Operation {batch_id})", type=["xlsx"], key=f"upload_filter_{batch_id}")
+            if uploaded_filter_file:
+                filter_df = load_filter_data(uploaded_filter_file)
+                mass = st.number_input("Mass (kg)", min_value=0.0, key=f"mass_{batch_id}")
+                bulk_density = st.number_input("Bulk density (kg/m³)", min_value=0.0, key=f"bd_{batch_id}")
+                if st.button(f"Submit Filtration Operation {batch_id}", key=f"submit_{batch_id}"):
+                    user_input = {
+                        "ph_condition": ph_condition,
+                        "corrosion_rate": corrosion_rate,
+                        "coupon_materials": coupon_materials,
+                        "temperature": temperature,
+                        "bulk_density": bulk_density,
+                        "mass": mass
+                    }
+                    matched_df = filter_filters(filter_df.copy(), user_input)
+                    if not matched_df.empty:
+                        st.success("Matching filters found")
+                        st.dataframe(matched_df)
+                        selected_filter = st.selectbox("Select one filter to use:", matched_df["equipment id"].tolist() if "equipment id" in matched_df.columns else matched_df.index.astype(str), key=f"sel_filter_{batch_id}")
+                        step_tracking.append(([{
+                            "unit_op": batch_id,
+                            "operation": "filtration",
+                            "material": "N/A",
+                            "input_volume": 0,
+                            "actual_volume": mass / bulk_density * 1000,
+                            "accumulated_volume": mass / bulk_density * 1000
+                        }], selected_filter))
+                    else:
+                        st.warning("No matching filters found.")
 
-            another = st.radio(f"Add another Unit Operation?", ["no", "yes"], index=0, key=f"another_{batch_id}")
-            if another == "no":
-                break
+        another = st.radio(f"Add another Unit Operation?", ["no", "yes"], index=0, key=f"another_{batch_id}")
+        if another == "no":
+            break
 
-        if step_tracking:
-            excel_buffer = export_steps_to_excel(step_tracking)
-            st.download_button(
-                "📥 Download Steps Summary",
-                data=excel_buffer.getvalue(),
-                file_name="unit_op_steps.xlsx"
-            )
+    if step_tracking:
+        excel_buffer = export_steps_to_excel(step_tracking)
+        st.download_button("Download Steps Summary", data=excel_buffer.getvalue(), file_name="unit_op_steps.xlsx")
 
 if __name__ == "__main__":
     main()
+
 
