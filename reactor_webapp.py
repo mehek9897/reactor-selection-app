@@ -125,7 +125,7 @@ def filter_reactors(df, user_input, first_step_vol, total_vol):
     df["Preference Match"] = df["agitator"].apply(lambda a: "yes" if any(p in a for p in preferred) else "warning")
     return df
 
-def filter_filters(df, user_input):
+def filter_filters(df, user_input, filter_types_required):
     ph_condition = user_input["ph_condition"]
 
     if ph_condition == "basic":
@@ -146,7 +146,7 @@ def filter_filters(df, user_input):
 
     df = df[df["moc"].astype(str).str.upper().isin(allowed)]
 
-    # Volume Calculation
+    # Volume calculation
     mass = user_input["mass"]
     bulk_density = user_input["bulk_density"]
     volume_m3 = mass / bulk_density if bulk_density > 0 else 0
@@ -159,44 +159,10 @@ def filter_filters(df, user_input):
 
     df = df[df["cake capacity"] * 0.9 >= volume_litres]
 
-    # --- New Filter Selection Based on Process Property ---
-    filter_property = st.selectbox("Select a filter-specific property", [
-        "specific cake resistance (m/kg)",
-        "rate of cake buildup",
-        "settling rate"
-    ])
+    if not filter_types_required:
+        st.warning("No filter type matched the selected filter property.")
+        return pd.DataFrame()
 
-    filter_types_required = []
-
-    if filter_property == "specific cake resistance (m/kg)":
-        val = st.number_input("Enter specific cake resistance (m/kg)", min_value=0.0)
-        if 1e7 <= val < 1e8:
-            filter_types_required = ["CENTRIFUGE", "NUTSCHE"]
-        elif 1e8 <= val < 1e10:
-            filter_types_required = ["CENTRIFUGE", "ANFD", "RPF", "VNF"]
-        elif val >= 1e10:
-            filter_types_required = ["CENTRIFUGE", "NUTSCHE"]
-
-    elif filter_property == "rate of cake buildup":
-        unit = st.selectbox("Select unit for rate of cake buildup", ["cm/sec", "cm/min", "cm/hr"])
-        val = st.number_input(f"Enter rate of cake buildup ({unit})", min_value=0.0)
-        if unit == "cm/sec" and 0.1 <= val <= 10:
-            filter_types_required = ["CENTRIFUGE", "NUTSCHE"]
-        elif unit == "cm/min" and 0.1 <= val <= 10:
-            filter_types_required = ["CENTRIFUGE", "ANFD", "RPF"]
-        elif unit == "cm/hr" and 0.1 <= val <= 10:
-            filter_types_required = ["ANFD"]
-
-    elif filter_property == "settling rate":
-        val = st.number_input("Enter settling rate (cm/sec)", min_value=0.0)
-        if val > 5:
-            filter_types_required = ["CENTRIFUGE", "NUTSCHE"]
-        elif 0.1 <= val <= 5:
-            filter_types_required = ["ANFD", "RPF"]
-        elif val < 0.1:
-            filter_types_required = ["ANFD"]
-
-    # Match against filter type column
     if "filter type" not in df.columns:
         st.error("'filter type' column not found in the uploaded Excel.")
         return pd.DataFrame()
@@ -205,6 +171,7 @@ def filter_filters(df, user_input):
     df = df[df["filter type"].apply(lambda x: any(f in x for f in filter_types_required))]
 
     return df
+
 
 
 def export_steps_to_excel(steps_by_unitop):
@@ -277,6 +244,7 @@ def main():
 
         temperature = st.number_input("Process temperature (°C)", min_value=0.0, key=f"temp_{batch_id}")
 
+        # ---------- NON-FILTRATION OPERATIONS ----------
         if unit_op_type != "filtration":
             reaction_nature = st.selectbox("Nature of reaction", ["none", "homogeneous", "heterogeneous"], key=f"rn_{batch_id}")
             reaction_subtype = None
@@ -307,12 +275,53 @@ def main():
                     step_tracking.append((step_log, selected_reactor))
                 else:
                     st.warning("No matching reactors found for this unit operation.")
+
+        # ---------- FILTRATION OPERATION ----------
         else:
             uploaded_filter_file = st.file_uploader(f"Upload Filter Database (for Unit Operation {batch_id})", type=["xlsx"], key=f"upload_filter_{batch_id}")
             if uploaded_filter_file:
                 filter_df = load_filter_data(uploaded_filter_file)
+
                 mass = st.number_input("Mass (kg)", min_value=0.0, key=f"mass_{batch_id}")
                 bulk_density = st.number_input("Bulk density (kg/m³)", min_value=0.0, key=f"bd_{batch_id}")
+
+                filter_property = st.selectbox(
+                    "Select a filter-specific property",
+                    ["specific cake resistance (m/kg)", "rate of cake buildup", "settling rate"],
+                    key=f"filter_prop_{batch_id}"
+                )
+
+                filter_types_required = []
+                val = 0
+
+                if filter_property == "specific cake resistance (m/kg)":
+                    val = st.number_input("Enter specific cake resistance (m/kg)", min_value=0.0, key=f"resistance_{batch_id}")
+                    if 1e7 <= val < 1e8:
+                        filter_types_required = ["CENTRIFUGE", "NUTSCHE"]
+                    elif 1e8 <= val < 1e10:
+                        filter_types_required = ["CENTRIFUGE", "ANFD", "RPF", "VNF"]
+                    elif val >= 1e10:
+                        filter_types_required = ["CENTRIFUGE", "NUTSCHE"]
+
+                elif filter_property == "rate of cake buildup":
+                    unit = st.selectbox("Select unit for rate of cake buildup", ["cm/sec", "cm/min", "cm/hr"], key=f"buildup_unit_{batch_id}")
+                    val = st.number_input(f"Enter rate of cake buildup ({unit})", min_value=0.0, key=f"buildup_val_{batch_id}")
+                    if unit == "cm/sec" and 0.1 <= val <= 10:
+                        filter_types_required = ["CENTRIFUGE", "NUTSCHE"]
+                    elif unit == "cm/min" and 0.1 <= val <= 10:
+                        filter_types_required = ["CENTRIFUGE", "ANFD", "RPF"]
+                    elif unit == "cm/hr" and 0.1 <= val <= 10:
+                        filter_types_required = ["ANFD"]
+
+                elif filter_property == "settling rate":
+                    val = st.number_input("Enter settling rate (cm/sec)", min_value=0.0, key=f"settling_{batch_id}")
+                    if val > 5:
+                        filter_types_required = ["CENTRIFUGE", "NUTSCHE"]
+                    elif 0.1 <= val <= 5:
+                        filter_types_required = ["ANFD", "RPF"]
+                    elif val < 0.1:
+                        filter_types_required = ["ANFD"]
+
                 if st.button(f"Submit Filtration Operation {batch_id}", key=f"submit_{batch_id}"):
                     user_input = {
                         "ph_condition": ph_condition,
@@ -322,7 +331,9 @@ def main():
                         "bulk_density": bulk_density,
                         "mass": mass
                     }
-                    matched_df = filter_filters(filter_df.copy(), user_input)
+
+                    matched_df = filter_filters(filter_df.copy(), user_input, filter_types_required)
+
                     if not matched_df.empty:
                         st.success("Matching filters found")
                         st.dataframe(matched_df)
@@ -332,21 +343,22 @@ def main():
                             "operation": "filtration",
                             "material": "N/A",
                             "input_volume": 0,
-                            "actual_volume": mass / bulk_density * 1000,
-                            "accumulated_volume": mass / bulk_density * 1000
+                            "actual_volume": mass / bulk_density * 1000 if bulk_density > 0 else 0,
+                            "accumulated_volume": mass / bulk_density * 1000 if bulk_density > 0 else 0
                         }], selected_filter))
                     else:
                         st.warning("No matching filters found.")
 
+        # Add more unit operations?
         another = st.radio(f"Add another Unit Operation?", ["no", "yes"], index=0, key=f"another_{batch_id}")
         if another == "no":
             break
 
+    # Export Excel summary
     if step_tracking:
         excel_buffer = export_steps_to_excel(step_tracking)
         st.download_button("Download Steps Summary", data=excel_buffer.getvalue(), file_name="unit_op_steps.xlsx")
 
 if __name__ == "__main__":
     main()
-
 
