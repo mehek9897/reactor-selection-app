@@ -13,7 +13,7 @@ def load_reactor_data(filepath):
         "min sensing volume": "min sensing",
         "min stirring volume": "min stirring",
         "capacity": "max volume",
-        "moc": "moc",
+        "moc": "moc", 
         "utilities": "utilities",
         "agitator": "agitator"
     }
@@ -34,6 +34,18 @@ def load_filter_data(uploaded_file):
     df.columns = df.columns.str.strip().str.lower()
     return df
 
+def load_dryer_data(uploaded_file):
+    df = pd.read_excel(uploaded_file)
+    df.columns = df.columns.str.strip().str.lower()  # Clean column names
+    rename_map = {
+        "dryer id": "equipment id",   # Standardized for consistency
+        "capacity": "capacity",
+        "moc": "moc",
+        "dryer type": "dryer type"
+    }
+    df = df.rename(columns=rename_map)
+    return df
+
 def collect_unit_operation(unit_op_id):
     steps = []
     total_volume = 0
@@ -47,12 +59,12 @@ def collect_unit_operation(unit_op_id):
         step_count += 1
         st.markdown(f"### Step {step_count}")
         operation = st.selectbox(f"Select operation type for Step {step_count}", ["charge", "addition"], key=f"op_{unit_op_id}_{step_count}")
-        material = st.selectbox(f"Select material type for Step {step_count}", ["reagent 1", "reagent 2", "reagent 3", "ksm", "solvent"], key=f"mat_{unit_op_id}_{step_count}")
+        material = st.selectbox(f"Select material type for Step {step_count}", ["reagent 1", "reagent 2", "reagent 3", "KSM", "solvent"], key=f"mat_{unit_op_id}_{step_count}")
         volume = st.number_input(f"Enter volume (L) for Step {step_count}", min_value=0.0, key=f"vol_{unit_op_id}_{step_count}")
 
         actual_volume = volume
-        if material == "ksm":
-            percentage = st.number_input(f"Enter percentage of KSM for Step {step_count}", min_value=0.0, max_value=100.0, key=f"ksm_{unit_op_id}_{step_count}")
+        if material == "KSM":
+            percentage = st.number_input(f"Enter percentage of KSM for Step {step_count}", min_value=0.0, max_value=100.0, key=f"KSM_{unit_op_id}_{step_count}")
             if percentage > 0:
                 actual_volume = volume / (percentage / 100)
 
@@ -173,6 +185,44 @@ def filter_filters(df, user_input, filter_types_required):
     return df
 
 
+def filter_dryers(df, user_input):
+    ph_condition = user_input["ph_condition"]
+
+    # MOC compatibility based on pH
+    if ph_condition == "basic":
+        allowed = ["SSR", "HAR", "HALAR"]
+    elif ph_condition == "acidic":
+        allowed = ["HALAR", "HAR"]
+    elif ph_condition == "neutral":
+        allowed = ["SSR", "HAR", "HALAR"]
+    elif ph_condition == "coupon":
+        mat = user_input["coupon_materials"][0].strip().upper()
+        if user_input["corrosion_rate"] < 0.1:
+            allowed = [mat]
+        else:
+            st.error("Corrosion rate too high for this material.")
+            return pd.DataFrame()
+    else:
+        allowed = []
+
+    # Filter by MOC
+    df = df[df["moc"].astype(str).str.upper().isin(allowed)]
+
+    # Volume check
+    volume_L = user_input["volume"]
+    st.write(f"Volume required (L): {volume_L:.2f}")
+
+    if "capacity" not in df.columns:
+        st.error("'capacity' column not found in the uploaded Excel.")
+        return pd.DataFrame()
+
+    # Capacity should be >= required volume (with 90% margin)
+    df = df[df["capacity"] * 0.9 >= volume_L]
+
+    return df
+
+
+
 
 def export_steps_to_excel(steps_by_unitop):
     buffer = io.BytesIO()
@@ -234,7 +284,7 @@ def main():
         batch_id += 1
         st.markdown(f"## Unit Operation {batch_id}")
 
-        unit_op_type = st.selectbox("Select unit operation type", ["reaction", "distillation", "pressurized", "extraction/workup", "filtration"], key=f"unit_type_{batch_id}")
+        unit_op_type = st.selectbox("Select unit operation type", ["reaction", "distillation", "pressurized", "extraction/workup", "filtration", "drying"], key=f"unit_type_{batch_id}")
         ph_condition = st.selectbox("pH condition", ["basic", "acidic", "neutral", "coupon"], key=f"ph_{batch_id}")
         corrosion_rate = 0
         coupon_materials = []
@@ -244,8 +294,8 @@ def main():
 
         temperature = st.number_input("Process temperature (°C)", min_value=0.0, key=f"temp_{batch_id}")
 
-        # ---------- NON-FILTRATION OPERATIONS ----------
-        if unit_op_type != "filtration":
+        # ---------- NON-FILTRATION AND NON-DRYING OPERATIONS ----------
+        if unit_op_type not in ["filtration", "drying"]:
             reaction_nature = st.selectbox("Nature of reaction", ["none", "homogeneous", "heterogeneous"], key=f"rn_{batch_id}")
             reaction_subtype = None
             if reaction_nature == "heterogeneous":
@@ -277,7 +327,7 @@ def main():
                     st.warning("No matching reactors found for this unit operation.")
 
         # ---------- FILTRATION OPERATION ----------
-        else:
+        elif unit_op_type == "filtration":
             uploaded_filter_file = st.file_uploader(f"Upload Filter Database (for Unit Operation {batch_id})", type=["xlsx"], key=f"upload_filter_{batch_id}")
             if uploaded_filter_file:
                 filter_df = load_filter_data(uploaded_filter_file)
@@ -349,6 +399,40 @@ def main():
                     else:
                         st.warning("No matching filters found.")
 
+        # ---------- DRYING OPERATION ----------
+        elif unit_op_type == "drying":
+            uploaded_dryer_file = st.file_uploader(f"Upload Dryer Database (for Unit Operation {batch_id})", type=["xlsx"], key=f"upload_dryer_{batch_id}")
+            if uploaded_dryer_file:
+                dryer_df = load_dryer_data(uploaded_dryer_file)
+
+                volume_L = st.number_input("Volume (L)", min_value=0.0, key=f"vol_dry_{batch_id}")
+
+                if st.button(f"Submit Drying Operation {batch_id}", key=f"submit_dry_{batch_id}"):
+                    user_input = {
+                        "ph_condition": ph_condition,
+                        "corrosion_rate": corrosion_rate,
+                        "coupon_materials": coupon_materials,
+                        "temperature": temperature,
+                        "volume": volume_L
+                    }
+
+                    matched_df = filter_dryers(dryer_df.copy(), user_input)
+
+                    if not matched_df.empty:
+                        st.success("Matching dryers found")
+                        st.dataframe(matched_df)
+                        selected_dryer = st.selectbox("Select one dryer to use:", matched_df["equipment id"].tolist() if "equipment id" in matched_df.columns else matched_df.index.astype(str), key=f"sel_dryer_{batch_id}")
+                        step_tracking.append(([{
+                            "unit_op": batch_id,
+                            "operation": "drying",
+                            "material": "N/A",
+                            "input_volume": 0,
+                            "actual_volume": volume_L,
+                            "accumulated_volume": volume_L
+                        }], selected_dryer))
+                    else:
+                        st.warning("No matching dryers found.")
+
         # Add more unit operations?
         another = st.radio(f"Add another Unit Operation?", ["no", "yes"], index=0, key=f"another_{batch_id}")
         if another == "no":
@@ -361,4 +445,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
