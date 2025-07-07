@@ -4,7 +4,10 @@ import io
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment
+import re
+import pdfplumber
 from io import BytesIO
+import xlsxwriter
 
 def load_reactor_data(filepath):
     df = pd.read_excel(filepath)
@@ -264,14 +267,18 @@ def export_steps_to_excel(steps_by_unitop):
     return buffer
 
 def main():
-    st.set_page_config("Reactor and Filter Selector", layout="wide")
-    st.title("Process Engineering Automation")
+    tab1, tab2 = st.tabs(["Equipment Selection", "Flowchart Generator"])
+    
+    with tab1:
+
+     st.set_page_config("Reactor and Filter Selector", layout="wide")
+     st.title("Process Engineering Automation")
 
     # Sidebar for tracking selections
-    if "selections" not in st.session_state:
+     if "selections" not in st.session_state:
         st.session_state.selections = []
 
-    with st.sidebar:
+     with st.sidebar:
         st.header("Unit Operation Steps")
         if st.session_state.selections:
             for i, (step_log, selection) in enumerate(st.session_state.selections):
@@ -289,10 +296,10 @@ def main():
         else:
             st.info("No unit operations added yet.")
 
-    uploaded_file = st.file_uploader("Upload reactor database", type="xlsx")
-    if not uploaded_file:
+     uploaded_file = st.file_uploader("Upload reactor database", type="xlsx")
+     if not uploaded_file:
         st.info("Upload the reactor database to start.")
-    else:
+     else:
         df = load_reactor_data(uploaded_file)
         if not df.empty:
             for idx in range(len(st.session_state.selections), len(st.session_state.selections) + 1):
@@ -505,7 +512,87 @@ def main():
                             else:
                                 st.warning("No matching dryers found.")
 
-    # Export Excel summary
+    with tab2:
+        st.header("📋 Flowchart Generator from Familiarization Report")
+
+        def extract_numbered_steps_from_pdf(file):
+            with pdfplumber.open(file) as pdf:
+                full_text = "\n".join(page.extract_text() for page in pdf.pages if page.extract_text())
+
+            match = re.search(r"(?i)\bprocedure\b", full_text)
+            if match:
+                full_text = full_text[match.end():]
+
+            pattern = r"(\d{1,2})\.\s(.+?)(?=\n\d{1,2}\.\s|\Z)"
+            matches = re.findall(pattern, full_text, re.DOTALL)
+
+            steps = []
+            for num, step in matches:
+                step = step.strip().replace('\n', ' ')
+                steps.append(f"{num}. {step}")
+            return steps
+
+        def split_step_note(text):
+            note_match = re.search(r"(.*?)(?:(?:note[:\-])\s*)(.+)", text, flags=re.IGNORECASE)
+            if note_match:
+                instruction = note_match.group(1).strip()
+                note = "Note: " + note_match.group(2).strip()
+                return instruction, note
+            return text.strip(), None
+
+        def create_excel_with_flowchart_only(steps):
+            output = BytesIO()
+            workbook = xlsxwriter.Workbook(output, {'in_memory': True})
+            worksheet = workbook.add_worksheet("Process Flow")
+
+            row = 0
+            box_format = workbook.add_format({'border': 2, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
+            diamond_format = workbook.add_format({
+                'border': 2, 'align': 'center', 'valign': 'vcenter',
+                'text_wrap': True, 'bold': True, 'font_color': 'blue', 'bg_color': '#DDEEFF'
+            })
+
+            for i, step in enumerate(steps):
+                instruction, note = split_step_note(step)
+                is_diamond = bool(re.search(r"\b(send|submit)\b", instruction, re.IGNORECASE))
+                cell_format = diamond_format if is_diamond else box_format
+
+                display_text = instruction
+                if note:
+                    display_text += f"\n{note}"
+
+                worksheet.set_row(row, 100)
+                worksheet.set_column('C:E', 35)
+                worksheet.merge_range(row, 2, row + 1, 4, display_text, cell_format)
+
+                if i < len(steps) - 1:
+                    worksheet.write(row + 2, 3, "↓", workbook.add_format({
+                        'align': 'center', 'valign': 'vcenter', 'font_size': 20, 'bold': True
+                    }))
+
+                row += 3
+
+            workbook.close()
+            output.seek(0)
+            return output
+
+        uploaded_file = st.file_uploader("📄 Upload Familiarization Report PDF", type=["pdf"])
+        if uploaded_file:
+            steps = extract_numbered_steps_from_pdf(uploaded_file)
+            if steps:
+                st.success(f"✅ Extracted {len(steps)} steps under 'Procedure'")
+                if st.button("Generate Flowchart Excel"):
+                    excel_file = create_excel_with_flowchart_only(steps)
+                    st.download_button(
+                        label="📥 Download Flowchart Excel",
+                        data=excel_file,
+                        file_name="flowchart_only.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+            else:
+                st.warning("⚠️ No procedure steps found in the uploaded PDF.")
+
+    # Export Excel summary for Equipment Selection tab
     if st.session_state.selections:
         excel_buffer = export_steps_to_excel(st.session_state.selections)
         st.download_button("Download Steps Summary", data=excel_buffer.getvalue(), file_name="unit_op_steps.xlsx")
